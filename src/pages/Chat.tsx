@@ -41,26 +41,28 @@ export default function Chat() {
 
   useEffect(() => {
     fetchConversations();
-    const subscription = supabase
-      .channel("messages")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "messages" },
-        (payload) => {
-          if (payload.new && payload.new.session_id === sessionId) {
-            const message = payload.new.message as { content: string; type: string };
-            setMessages((prev) => [
-              ...prev,
-              { content: message.content, type: message.type as "human" | "ai" },
-            ]);
+    if (sessionId) {
+      const channel = supabase
+        .channel("messages")
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "messages" },
+          (payload) => {
+            if (payload.new && payload.new.session_id === sessionId) {
+              const message = payload.new.message;
+              setMessages((prev) => [
+                ...prev,
+                { content: message.content, type: message.type as "human" | "ai" },
+              ]);
+            }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
 
-    return () => {
-      subscription.unsubscribe();
-    };
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
   }, [sessionId]);
 
   const fetchConversations = async () => {
@@ -128,7 +130,8 @@ export default function Chat() {
   };
 
   const startNewChat = () => {
-    setSessionId(uuidv4());
+    const newSessionId = uuidv4();
+    setSessionId(newSessionId);
     setMessages([]);
   };
 
@@ -140,6 +143,19 @@ export default function Chat() {
 
     setLoading(true);
     try {
+      // First, insert the user's message into the database
+      const userMessage = {
+        session_id: sessionId,
+        message: { content, type: "human" }
+      };
+
+      const { error: insertError } = await supabase
+        .from("messages")
+        .insert(userMessage);
+
+      if (insertError) throw insertError;
+
+      // Then send to the API
       const requestId = uuidv4();
       const response = await fetch("http://localhost:8001/api/pydantic-github-agent", {
         method: "POST",
